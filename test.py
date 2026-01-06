@@ -1,5 +1,4 @@
 import cv2
-from cv2_enumerate_cameras import enumerate_cameras
 
 def test_camera_access():
     cap = cv2.VideoCapture(0)  # Open default camera

@@ -4,6 +4,7 @@ import os
 import sys
 import cv2
 from ultralytics import YOLO
+from collections import deque
 
 
 def parse_args():
@@ -67,7 +68,8 @@ def main():
     # Wait for camera/source to become available up to timeout
     import time
     start = time.time()
-    print("⏰ Waiting for source to open...")
+    if args.verbose: 
+        print("⏰ Waiting for source to open...")
     while not cap.isOpened():
         if time.time() - start > args.open_timeout:
             print(f"Error: Could not open source within {args.open_timeout} seconds.")
@@ -79,6 +81,8 @@ def main():
     writer = None
     print("Press 'q' to quit (if display enabled).")
 
+    center_history = deque(maxlen=5)
+
     while True:
         ret, frame = cap.read() #ret = boolean, frame = image array(numpy)
         if not ret: #check if frame is read correctly
@@ -88,6 +92,8 @@ def main():
 
         # Run inference
         results = model(frame, classes=classes_list, conf=args.conf, verbose=False)
+        
+        tracked_in_frame = False
 
         for r in results:
             boxes = r.boxes
@@ -95,8 +101,12 @@ def main():
                 x1, y1, x2, y2 = box.xyxy[0]
                 x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
 
-                center_x = (x1 + x2) / 2
-                center_y = (y1 + y2) / 2
+                center_x = int((x1 + x2) / 2)
+                center_y = int((y1 + y2) / 2)
+
+                if not tracked_in_frame:
+                    center_history.append((center_x, center_y))
+                    tracked_in_frame = True
 
                 rel_x = round(center_x / width, 3)
                 rel_y = round(center_y / height, 3)
@@ -107,6 +117,13 @@ def main():
                 cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
                 cv2.putText(frame, f"Person {rel_x}, {rel_y}", (x1, y1 - 10),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+                
+        if len(center_history) >= 5:
+            # Draw the movement vector (from oldest to newest point in history)
+            cv2.arrowedLine(frame, center_history[0], center_history[-4], (0, 0, 255), 3, tipLength=0.5)
+            # Optional: Draw the path trail
+            for i in range(1, len(center_history)):
+                cv2.line(frame, center_history[i-1], center_history[i], (0, 255, 255), 2)
 
         # Initialize writer if requested
         if args.save and writer is None:
