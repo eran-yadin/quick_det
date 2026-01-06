@@ -7,6 +7,32 @@ from ultralytics import YOLO
 from collections import deque
 
 
+def load_config(file_path):
+    """Simple parser for the custom config.cfg format."""
+    config = {}
+    if not os.path.exists(file_path):
+        return config
+    
+    with open(file_path, 'r') as f:
+        for line in f:
+            # Remove comments and whitespace
+            line = line.split('#')[0].strip()
+            if not line or '=' not in line:
+                continue
+            
+            key, val = line.split('=', 1)
+            key, val = key.strip(), val.strip()
+            
+            # Parse values
+            if val.lower() == 'true': val = True
+            elif val.lower() == 'false': val = False
+            elif (val.startswith('"') and val.endswith('"')) or (val.startswith("'") and val.endswith("'")):
+                val = val[1:-1]
+            elif val.isdigit(): val = int(val)
+            
+            config[key] = val
+    return config
+
 def parse_args():
     parser = argparse.ArgumentParser(description="YOLO human detection (live or from file)")
     parser.add_argument("--source", "-s", default="0",
@@ -27,11 +53,34 @@ def parse_args():
                         help="Print detection coordinates and extra info to console.")
     parser.add_argument("--open-timeout", type=float, default=10.0,
                         help="Seconds to wait for camera/source to open before failing (default: 10).")
+    parser.add_argument("--max-history", type=int, default=5,
+                        help="Maximum history length for movement tracking (default: 5).")
+
+    # Load defaults from config.cfg if it exists
+    config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.cfg")
+    config = load_config(config_path)
+    
+    defaults = {}
+    if "video_source" in config: defaults["source"] = str(config["video_source"]) # Ensure string for argparse
+    if "model" in config: defaults["weights"] = config["model"]
+    if "confidence_threshold" in config: defaults["conf"] = config["confidence_threshold"]
+    if "device" in config: defaults["device"] = config["device"]
+    if "no_display" in config: defaults["no_display"] = config["no_display"]
+    if config.get("video_save") and "output_path" in config:
+        defaults["save"] = config["output_path"]
+    if "device" in config: defaults["device"] = config["device"]
+    if "verbose" in config: defaults["verbose"] = config["verbose"]
+    if "open_timeout" in config: defaults["open_timeout"] = config["open_timeout"]
+    if "max_history" in config: defaults["max_history"] = config["max_history"]
+
+    
+    parser.set_defaults(**defaults)
     return parser.parse_args()
 
 
 def main():
     args = parse_args()
+    config = load_config(os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.cfg"))
     
     # Parse source (camera index or path)
     source = int(args.source) if args.source.isdigit() else args.source
@@ -81,7 +130,7 @@ def main():
     writer = None
     print("Press 'q' to quit (if display enabled).")
 
-    center_history = deque(maxlen=5)
+    center_history = deque(maxlen=args.max_history)
 
     while True:
         ret, frame = cap.read() #ret = boolean, frame = image array(numpy)
@@ -120,10 +169,12 @@ def main():
                 
         if len(center_history) >= 5:
             # Draw the movement vector (from oldest to newest point in history)
-            cv2.arrowedLine(frame, center_history[0], center_history[-4], (0, 0, 255), 3, tipLength=0.5)
+            if config["show_arrow"]:
+                cv2.arrowedLine(frame, center_history[0], center_history[-4], (0, 0, 255), 3, tipLength=0.5)
             # Optional: Draw the path trail
             for i in range(1, len(center_history)):
-                cv2.line(frame, center_history[i-1], center_history[i], (0, 255, 255), 2)
+                if config["show_trail"]:
+                    cv2.line(frame, center_history[i-1], center_history[i], (0, 255, 255), 2)
 
         # Initialize writer if requested
         if args.save and writer is None:
