@@ -30,6 +30,15 @@ python -m pip install -r requirements.txt
 python main.py
 ```
 
+- **test input**
+if you need to test your camera you can run the `test.py`
+it will ask you if you want live view port
+you can say no (n)
+to run it using bash
+ ```bash
+python test.py
+```
+
 Notes:
 - `torch` and `torchvision` versions in `requirements.txt` may require a specific CUDA/cuDNN match for GPU acceleration. If you plan to use GPU, follow PyTorch install instructions at https://pytorch.org to install a compatible build.
 - The file `yolov8n.pt` is included; the code will also let Ultralytics attempt to fetch the model if not present.

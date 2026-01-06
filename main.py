@@ -10,7 +10,7 @@ def parse_args():
     parser.add_argument("--source", "-s", default="0",
                         help="Camera index (integer) or path to video/image. Use an integer for camera (default: 0).")
     parser.add_argument("--weights", "-w", default="yolov8n.pt",
-                        help="Path to model weights file (default: yolov8n.pt).")
+                        help="Model weights (e.g., yolov8n.pt, yolov8s.pt, yolov8m.pt). Default: yolov8n.pt")
     parser.add_argument("--conf", "-c", type=float, default=0.5,
                         help="Confidence threshold for detections (default: 0.5).")
     parser.add_argument("--classes", type=str, default="0",
@@ -30,7 +30,7 @@ def parse_args():
 
 def main():
     args = parse_args()
-
+    
     # Parse source (camera index or path)
     source = int(args.source) if args.source.isdigit() else args.source
 
@@ -42,7 +42,7 @@ def main():
         print(f"Loading model from {args.weights}...")
     model = YOLO(args.weights)
     if args.verbose:
-        print("Model loaded.")
+        print("✅ Model loaded.")
 
     # Try to move model to device if provided
     if args.device:
@@ -62,6 +62,7 @@ def main():
     # Wait for camera/source to become available up to timeout
     import time
     start = time.time()
+    print("⏰ Waiting for source to open...")
     while not cap.isOpened():
         if time.time() - start > args.open_timeout:
             print(f"Error: Could not open source within {args.open_timeout} seconds.")
@@ -74,11 +75,11 @@ def main():
     print("Press 'q' to quit (if display enabled).")
 
     while True:
-        ret, frame = cap.read()
-        if not ret:
+        ret, frame = cap.read() #ret = boolean, frame = image array(numpy)
+        if not ret: #check if frame is read correctly
             break
 
-        height, width, _ = frame.shape
+        height, width, _ = frame.shape #get frame dimensions
 
         # Run inference
         results = model(frame, classes=classes_list, conf=args.conf, verbose=False)
