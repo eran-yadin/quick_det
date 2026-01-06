@@ -1,4 +1,5 @@
 import argparse
+from ast import arg
 import os
 import sys
 import cv2
@@ -33,14 +34,18 @@ def main():
     
     # Parse source (camera index or path)
     source = int(args.source) if args.source.isdigit() else args.source
-
+    print(f"Using source: {source}")
+    print("-" * 30)
     # Parse classes into list[int]
     classes_list = [int(x) for x in args.classes.split(",") if x.strip() != ""]
+    print(f"Detecting classes: {classes_list}")
+    print("-" * 30)
 
     # Load model (may take time on first run)
     if args.verbose:
         print(f"Loading model from {args.weights}...")
-    model = YOLO(args.weights)
+    src = "models\\"+args.weights
+    model = YOLO(src)
     if args.verbose:
         print("✅ Model loaded.")
 
@@ -123,4 +128,5 @@ def main():
 
 
 if __name__ == "__main__":
+    print("Starting YOLO Human Detection...")
     main()
