@@ -73,7 +73,7 @@ def parse_args():
     if "open_timeout" in config: defaults["open_timeout"] = config["open_timeout"]
     if "max_history" in config: defaults["max_history"] = config["max_history"]
 
-    
+
     parser.set_defaults(**defaults)
     return parser.parse_args()
 
@@ -130,7 +130,7 @@ def main():
     writer = None
     print("Press 'q' to quit (if display enabled).")
 
-    center_history = deque(maxlen=args.max_history)
+    track_histories = {}
 
     while True:
         ret, frame = cap.read() #ret = boolean, frame = image array(numpy)
@@ -139,10 +139,8 @@ def main():
 
         height, width, _ = frame.shape #get frame dimensions
 
-        # Run inference
-        results = model(frame, classes=classes_list, conf=args.conf, verbose=False)
-        
-        tracked_in_frame = False
+        # Run tracking
+        results = model.track(frame, classes=classes_list, conf=args.conf, persist=True, verbose=False)
 
         for r in results:
             boxes = r.boxes
@@ -153,28 +151,37 @@ def main():
                 center_x = int((x1 + x2) / 2)
                 center_y = int((y1 + y2) / 2)
 
-                if not tracked_in_frame:
-                    center_history.append((center_x, center_y))
-                    tracked_in_frame = True
-
                 rel_x = round(center_x / width, 3)
                 rel_y = round(center_y / height, 3)
 
                 if args.verbose:
-                    print(f"Human detected at: X={rel_x}, Y={rel_y} (Relative)")
+                    print(f"Human detected at: X={rel_x}, Y={rel_y} (Relative) id={box.id}")
 
                 cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                cv2.putText(frame, f"Person {rel_x}, {rel_y}", (x1, y1 - 10),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
                 
-        if len(center_history) >= 5:
-            # Draw the movement vector (from oldest to newest point in history)
-            if config["show_arrow"]:
-                cv2.arrowedLine(frame, center_history[0], center_history[-4], (0, 0, 255), 3, tipLength=0.5)
-            # Optional: Draw the path trail
-            for i in range(1, len(center_history)):
-                if config["show_trail"]:
-                    cv2.line(frame, center_history[i-1], center_history[i], (0, 255, 255), 2)
+                label = f"Person {rel_x}, {rel_y}"
+                
+                # Handle tracking
+                if box.id is not None:
+                    track_id = int(box.id.item())
+                    label += f" ID: {track_id}"
+                    
+                    if track_id not in track_histories:
+                        track_histories[track_id] = deque(maxlen=args.max_history)
+                    track_histories[track_id].append((center_x, center_y))
+                    
+                    if len(track_histories[track_id]) >= 2:
+                        points = track_histories[track_id]
+                        
+                        if config["show_trail"]:
+                            for i in range(1, len(points)):
+                                cv2.line(frame, points[i-1], points[i], (0, 255, 255), 2)
+                                
+                        if config["show_arrow"]:
+                             cv2.arrowedLine(frame, points[0], points[-1], (0, 0, 255), 3, tipLength=0.5)
+
+                cv2.putText(frame, label, (x1, y1 - 10),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
 
         # Initialize writer if requested
         if args.save and writer is None:
