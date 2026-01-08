@@ -81,7 +81,10 @@ def parse_args():
 def main():
     args = parse_args()
     config = load_config(os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.cfg"))
-    
+    box_x1 = float(config.get("square_x1", 0.2))
+    box_y1 = float(config.get("square_y1", 0.2))
+    box_x2 = float(config.get("square_x2", 0.8))
+    box_y2 = float(config.get("square_y2", 0.8))
     # Parse source (camera index or path)
     source = int(args.source) if args.source.isdigit() else args.source
     print(f"Using source: {source}")
@@ -127,6 +130,7 @@ def main():
     if args.verbose:
         print("Source opened successfully.")
 
+
     writer = None
     print("Press 'q' to quit (if display enabled).")
 
@@ -134,14 +138,15 @@ def main():
 
     while True:
         ret, frame = cap.read() #ret = boolean, frame = image array(numpy)
+
         if not ret: #check if frame is read correctly
             break
 
         height, width, _ = frame.shape #get frame dimensions
-
+        draw_alert_box(frame, box_x1,box_y1,box_x2,box_y2, "Alert Zone")
         # Run tracking
         results = model.track(frame, classes=classes_list, conf=args.conf, persist=True, verbose=False)
-
+        
         for r in results:
             boxes = r.boxes
             for box in boxes:
@@ -202,6 +207,17 @@ def main():
     cv2.destroyAllWindows()
 
 
+def draw_alert_box(frame, r_x1, r_y1, r_x2, r_y2, alert_text):
+    x1 = round(r_x1 * frame.shape[1])
+    y1 = round(r_y1 * frame.shape[0])
+    x2 = round(r_x2 * frame.shape[1])
+    y2 = round(r_y2 * frame.shape[0])
+    """Draws a red alert box with text on the frame."""
+    cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 255), 3)
+    cv2.putText(frame, alert_text, (x1, y1 - 10),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+
 if __name__ == "__main__":
     print("Starting YOLO Human Detection...")
     main()
+

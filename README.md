@@ -2,7 +2,7 @@
 
 Short project for live human detection using Ultralytics YOLO and OpenCV.
 
-**Setup**
+## **Setup**
 - **Python:** use Python 3.10 or newer.
 - **Create a virtual environment and activate it:**
 
@@ -38,18 +38,23 @@ to run it using bash
  ```bash
 python test.py
 ```
+## left to do
+- make a GUI for choosing the active squre
+- make docker continer for moving to diffrent systems
+- make GUI for settings
+- make a API for interacting with IOT system 
 
-Notes:
+## Notes:
 - `torch` and `torchvision` versions in `requirements.txt` may require a specific CUDA/cuDNN match for GPU acceleration. If you plan to use GPU, follow PyTorch install instructions at https://pytorch.org to install a compatible build.
 - The file `yolov8n.pt` is included; the code will also let Ultralytics attempt to fetch the model if not present.
 
-**Project structure**
+## **Project structure**
 - `main.py` — main application script that captures camera frames, runs YOLO inference and displays bounding boxes and relative coordinates.
 - `yolov8n.pt` — YOLOv8 model weights (small/neutral). Kept locally for offline runs.
 - `requirements.txt` — pinned Python packages used by the project.
 - `get-pip.py` — pip bootstrap script; only needed if your Python environment has no `pip`.
 
-**Full documentation of `main.py`**
+## **Full documentation of `main.py`**
 
 File: [main.py](main.py)
 
