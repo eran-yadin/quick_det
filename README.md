@@ -21,7 +21,7 @@ python get-pip.py
 
 ```bash
 python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
+python -m pip install -r requireme~nts.txt
 ```
 
 - **Run the app:**
@@ -38,6 +38,20 @@ to run it using bash
  ```bash
 python test.py
 ```
+## set `detection square` and `exit vecotr`
+for now:
+`config.cfg`
+```py
+# square /relative
+square_x1 = 0.3
+square_y1 = 0.3
+square_x2 = 0.7
+square_y2 = 0.7 
+#vector exit
+vector_x = 0.3
+vector_y = 0
+```
+
 ## left to do
 - make a GUI for choosing the active squre
 - make docker continer for moving to diffrent systems

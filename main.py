@@ -6,6 +6,7 @@ from collections import deque
 import zmq
 import time
 import multiprocessing
+import numpy as np
 
 # GPIO Handling (Mock for non-Raspberry Pi systems)
 try:
@@ -143,6 +144,7 @@ def main():
     box_x2 = float(config.get("square_x2", 0.8))
     box_y2 = float(config.get("square_y2", 0.8))
 
+    VECTOR_TARGET = np.array([float(config.get("vector_x",1)),float(config.get("vector_y",1))])
     # Performance optimizations
     skip_frames = int(config.get("skip_frames", 0))
     resize_width = int(config.get("resize_width", 0))
@@ -232,7 +234,7 @@ def main():
             results = model.track(frame, classes=classes_list, conf=args.conf, persist=True, verbose=False)
             last_results = results
         
-
+        alert = False
         person_in_zone_this_frame = False
         for r in results:
             boxes = r.boxes
@@ -246,6 +248,7 @@ def main():
                 if (center_x > box_x1 * width and center_x < box_x2 * width and
                     center_y > box_y1 * height and center_y < box_y2 * height):
                     person_in_zone_this_frame = True
+                    pass
 
 
 
@@ -268,23 +271,38 @@ def main():
                         track_histories[track_id] = deque(maxlen=args.max_history)
                     track_histories[track_id].append((center_x, center_y))
                     
+
+
                     if len(track_histories[track_id]) >= 2:
                         points = track_histories[track_id]
-                        
+                    
+                        # Pass the start point (points[0]) and end point (points[-1]) separately
+                        person_moving_di = is_moving_in_direction(points[0], points[-1], VECTOR_TARGET, 0.5)
+                        if person_in_zone_this_frame and person_moving_di:
+                            alert = True
                         # Draw trail
                         if config["show_trail"]:
                             for i in range(1, len(points)):
                                 cv2.line(frame, points[i-1], points[i], (0, 255, 255), 2)
                         
                         # Draw arrow for movement direction        
+                        # Draw arrow for movement direction        
                         if config["show_arrow"]:
                              cv2.arrowedLine(frame, points[0], points[-1], (0, 0, 255), 3, tipLength=0.5)
+                             
+                             # FIX: Convert target vector to a visible arrow starting from top-left (50,50)
+                             # We multiply by 50 so you can actually see the direction length
+                             start_pt = (50, 50)
+                             end_pt = (int(50 + VECTOR_TARGET[0] * 50), int(50 + VECTOR_TARGET[1] * 50))
+                             
+                             cv2.arrowedLine(frame, start_pt, end_pt, (255, 0, 0), 3, tipLength=0.3)
+                             cv2.putText(frame, "Target Dir", (50, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 1)
 
                 cv2.putText(frame, label, (x1, y1 - 10),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
         
         # Send state to IO process
-        io_queue.put(person_in_zone_this_frame)
+        io_queue.put(alert)
 
 
         # Initialize writer if requested
@@ -318,6 +336,30 @@ def draw_alert_box(frame, r_x1, r_y1, r_x2, r_y2, alert_text):
     cv2.putText(frame, alert_text, (x1, y1 - 10),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
 
+
+def is_moving_in_direction(p1, p2, target_vector, tolerance=0.5):
+    """
+    p1: (x, y) starting point (previous frame)
+    p2: (x, y) ending point (current frame)
+    target_vector: (x, y) target direction
+    """
+    # 1. Calculate the movement vector (Current - Start)
+    # This creates a single vector [dx, dy]
+    movement = np.array(p2) - np.array(p1)
+    
+    # If the person didn't move (or barely moved), return False (single boolean)
+    if np.linalg.norm(movement) < 1.0: 
+        return False
+
+    # 2. Normalize the vectors
+    move_norm = movement / np.linalg.norm(movement)
+    target_norm = target_vector / np.linalg.norm(target_vector)
+
+    # 3. Calculate Dot Product (Result is a single scalar number)
+    dot_product = np.dot(move_norm, target_norm)
+
+    # 4. Return single boolean
+    return bool(dot_product > tolerance)
 
 
 if __name__ == "__main__":
