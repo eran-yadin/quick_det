@@ -42,7 +42,8 @@ python test.py
 - make a GUI for choosing the active squre
 - make docker continer for moving to diffrent systems
 - make GUI for settings
-- make a API for interacting with IOT system 
+- rusburry pi inplement
+- socket implement
 
 ## Notes:
 - `torch` and `torchvision` versions in `requirements.txt` may require a specific CUDA/cuDNN match for GPU acceleration. If you plan to use GPU, follow PyTorch install instructions at https://pytorch.org to install a compatible build.
@@ -85,7 +86,3 @@ Troubleshooting
 - If `pip install -r requirements.txt` fails due to `torch` wheels: install `torch` manually using the correct CUDA option from https://pytorch.org and then re-run `pip install -r requirements.txt` excluding `torch`/`torchvision` or adjust versions.
 - If Ultralytics throws errors loading the model, ensure `ultralytics` in `requirements.txt` is installed and compatible with the local `yolov8n.pt` file.
 
-Optional next steps
-- Add command-line flags to `main.py` (e.g., input source path, confidence threshold, output saving) using `argparse`.
-- Add logging and structured output (JSON) for downstream processing.
-- Add a small unit/integration test for a sample image to validate detection pipeline.

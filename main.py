@@ -1,11 +1,68 @@
 import argparse
-from ast import arg
 import os
-import sys
 import cv2
 from ultralytics import YOLO
 from collections import deque
+import zmq
+import time
+import multiprocessing
 
+# GPIO Handling (Mock for non-Raspberry Pi systems)
+try:
+    # 1. Try to load the REAL library (Works on Pi)
+    import RPi.GPIO as GPIO
+except (ImportError, RuntimeError):
+    # 2. If that fails (Works on Windows), load this MOCK class
+    print("Using Mock GPIO")
+    class GPIO:
+        BCM = "BCM"
+        Board = "BOARD"
+        OUT = "OUT"
+        HIGH = 1
+        LOW = 0
+        
+        @staticmethod
+        def setmode(mode): print(f"Mock Mode: {mode}")
+        @staticmethod
+        def setup(pin, mode): print(f"Mock Setup: {pin}")
+        @staticmethod
+        def output(pin, state): print(f"Mock Output: {pin} -> {state}")
+        @staticmethod
+        def cleanup(): print("Mock Cleanup")
+
+
+def io_worker(queue, config, verbose):
+    """Worker process to handle IO (ZMQ and GPIO) without blocking the main loop."""
+    # Setup ZMQ in this process
+    context = zmq.Context()
+    socket = context.socket(zmq.PUB)
+    socket.bind("tcp://*:5555")
+    if verbose:
+        print("IO Worker: Server started on Port 5555")
+
+    # Setup GPIO in this process
+    if config.get("use_gpio", True):
+        mode = config.get("setmode", "BCM")
+        if mode == "BOARD":
+            GPIO.setmode(GPIO.Board)
+        else:
+            GPIO.setmode(GPIO.BCM)
+        GPIO.setup(18, GPIO.OUT)
+
+    last_alert_time = 0
+    while True:
+        person_detected = queue.get()
+        if person_detected is None: # Sentinel to stop
+            break
+
+        if config.get("use_gpio", True):
+            GPIO.output(18, GPIO.HIGH if person_detected else GPIO.LOW)
+
+        if person_detected and (time.time() - last_alert_time > 1):
+            socket.send_string("alert Person Detected!")
+            if verbose:
+                print("Sent: Person Detected!")
+            last_alert_time = time.time()
 
 def load_config(file_path):
     """Simple parser for the custom config.cfg format."""
@@ -85,14 +142,27 @@ def main():
     box_y1 = float(config.get("square_y1", 0.2))
     box_x2 = float(config.get("square_x2", 0.8))
     box_y2 = float(config.get("square_y2", 0.8))
+
+    # Performance optimizations
+    skip_frames = int(config.get("skip_frames", 0))
+    resize_width = int(config.get("resize_width", 0))
+
+    # Start IO Process
+    io_queue = multiprocessing.Queue()
+    io_process = multiprocessing.Process(target=io_worker, args=(io_queue, config, args.verbose))
+    io_process.daemon = True
+    io_process.start()
+    
     # Parse source (camera index or path)
     source = int(args.source) if args.source.isdigit() else args.source
-    print(f"Using source: {source}")
+    if args.verbose:
+        print(f"Using source: {source}")
     print("-" * 30)
     # Parse classes into list[int]
     classes_list = [int(x) for x in args.classes.split(",") if x.strip() != ""]
-    print(f"Detecting classes: {classes_list}")
-    print("-" * 30)
+    if args.verbose:    
+        print(f"Detecting classes: {classes_list}")
+        print("-" * 30)
 
     # Load model (may take time on first run)
     if args.verbose:
@@ -135,18 +205,35 @@ def main():
     print("Press 'q' to quit (if display enabled).")
 
     track_histories = {}
+    frame_count = -1
+    last_results = []
 
     while True:
         ret, frame = cap.read() #ret = boolean, frame = image array(numpy)
 
         if not ret: #check if frame is read correctly
             break
+        
+        # Resize frame for performance if configured
+        if resize_width > 0:
+            h, w = frame.shape[:2]
+            new_height = int(h * (resize_width / w))
+            frame = cv2.resize(frame, (resize_width, new_height))
 
+        frame_count += 1
         height, width, _ = frame.shape #get frame dimensions
         draw_alert_box(frame, box_x1,box_y1,box_x2,box_y2, "Alert Zone")
-        # Run tracking
-        results = model.track(frame, classes=classes_list, conf=args.conf, persist=True, verbose=False)
         
+        # Frame Skipping Logic
+        if skip_frames > 0 and (frame_count % (skip_frames + 1) != 0):
+            results = last_results
+        else:
+            # Run tracking
+            results = model.track(frame, classes=classes_list, conf=args.conf, persist=True, verbose=False)
+            last_results = results
+        
+
+        person_in_zone_this_frame = False
         for r in results:
             boxes = r.boxes
             for box in boxes:
@@ -155,6 +242,12 @@ def main():
 
                 center_x = int((x1 + x2) / 2)
                 center_y = int((y1 + y2) / 2)
+                #check if the detection is in the alert box
+                if (center_x > box_x1 * width and center_x < box_x2 * width and
+                    center_y > box_y1 * height and center_y < box_y2 * height):
+                    person_in_zone_this_frame = True
+
+
 
                 rel_x = round(center_x / width, 3)
                 rel_y = round(center_y / height, 3)
@@ -178,15 +271,21 @@ def main():
                     if len(track_histories[track_id]) >= 2:
                         points = track_histories[track_id]
                         
+                        # Draw trail
                         if config["show_trail"]:
                             for i in range(1, len(points)):
                                 cv2.line(frame, points[i-1], points[i], (0, 255, 255), 2)
-                                
+                        
+                        # Draw arrow for movement direction        
                         if config["show_arrow"]:
                              cv2.arrowedLine(frame, points[0], points[-1], (0, 0, 255), 3, tipLength=0.5)
 
                 cv2.putText(frame, label, (x1, y1 - 10),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+        
+        # Send state to IO process
+        io_queue.put(person_in_zone_this_frame)
+
 
         # Initialize writer if requested
         if args.save and writer is None:
@@ -202,6 +301,8 @@ def main():
                 break
 
     cap.release()
+    io_queue.put(None) # Stop worker
+    io_process.join()
     if writer is not None:
         writer.release()
     cv2.destroyAllWindows()
@@ -217,7 +318,8 @@ def draw_alert_box(frame, r_x1, r_y1, r_x2, r_y2, alert_text):
     cv2.putText(frame, alert_text, (x1, y1 - 10),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
 
+
+
 if __name__ == "__main__":
     print("Starting YOLO Human Detection...")
     main()
-
