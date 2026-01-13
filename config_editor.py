@@ -56,7 +56,7 @@ CATEGORIES = {
     "Main Settings": [
         "video_source", "model", "confidence_threshold", "search_for", 
         "no_display", "output_path", "video_save", "device", "verbose", 
-        "time_out", "max_history", "show_arrow", "show_trail"
+        "time_out", "max_history", "vector_tolerance","show_arrow", "show_trail"
     ],
     "Socket": ["use_socket", "socket_port"],
     "GPIO": ["use_gpio", "gpio_pin", "setmode"],

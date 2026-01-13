@@ -141,7 +141,11 @@ def is_moving_in_direction(p1, p2, target_vector, tolerance=0.5):
     # 3. Dot Product
     dot_product = np.dot(move_norm, target_norm)
     
-    return bool(dot_product > tolerance)
+    if tolerance is None:
+        tolerance = 0.5
+
+    # Check if direction matches within tolerance (1.0 is exact match)
+    return bool(dot_product > (1.0 - tolerance))
 
 # --- Main Execution ---
 
@@ -191,6 +195,8 @@ def main():
 
     # 4. Open Source
     src_val = int(args.source) if args.source.isdigit() else args.source
+    if isinstance(src_val,str):
+        src_val = "input\\"+src_val
     cap = cv2.VideoCapture(src_val)
     
     start_wait = time.time()
@@ -267,8 +273,8 @@ def main():
                         is_moving_correctly = False
                         
                         if len(points) >= 2:
-                            is_moving_correctly = is_moving_in_direction(points[0], points[-1], VECTOR_TARGET, 0.5)
-                            
+                            is_moving_correctly = is_moving_in_direction(points[0], points[-1], VECTOR_TARGET, config.get("vector_tolerance"))
+    
                             # VISUALS: Trail
                             if config.get("show_trail", True):
                                 pts = np.array(list(points)).reshape((-1, 1, 2))

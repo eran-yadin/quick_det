@@ -18,7 +18,7 @@ def get_video_source():
                         if val.isdigit():
                             source = int(val)
                         else:
-                            source = val
+                            source = "input\\"+val
                     break
     return source
 
