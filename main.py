@@ -1,69 +1,36 @@
 import argparse
 import os
 import cv2
-from ultralytics import YOLO
-from collections import deque
+import numpy as np
 import zmq
 import time
 import multiprocessing
-import numpy as np
+import ast
+from collections import deque
+from ultralytics import YOLO
 
-# GPIO Handling (Mock for non-Raspberry Pi systems)
+# --- GPIO Handling (Mock for non-Raspberry Pi systems) ---
 try:
-    # 1. Try to load the REAL library (Works on Pi)
     import RPi.GPIO as GPIO
 except (ImportError, RuntimeError):
-    # 2. If that fails (Works on Windows), load this MOCK class
-    print("Using Mock GPIO")
+    print("⚠️ Using Mock GPIO (Not running on Raspberry Pi)")
     class GPIO:
         BCM = "BCM"
-        Board = "BOARD"
+        BOARD = "BOARD"
         OUT = "OUT"
         HIGH = 1
         LOW = 0
         
         @staticmethod
-        def setmode(mode): print(f"Mock Mode: {mode}")
+        def setmode(mode): print("setmode = "+mode)
         @staticmethod
-        def setup(pin, mode): print(f"Mock Setup: {pin}")
+        def setup(pin, mode): print("setup: pin="+str(pin)+" ,mode="+mode)
         @staticmethod
-        def output(pin, state): print(f"Mock Output: {pin} -> {state}")
+        def output(pin, state): print("output: pin="+str(pin)+" ,state="+str(state))
         @staticmethod
         def cleanup(): print("Mock Cleanup")
 
-
-def io_worker(queue, config, verbose):
-    """Worker process to handle IO (ZMQ and GPIO) without blocking the main loop."""
-    # Setup ZMQ in this process
-    context = zmq.Context()
-    socket = context.socket(zmq.PUB)
-    socket.bind("tcp://*:5555")
-    if verbose:
-        print("IO Worker: Server started on Port 5555")
-
-    # Setup GPIO in this process
-    if config.get("use_gpio", True):
-        mode = config.get("setmode", "BCM")
-        if mode == "BOARD":
-            GPIO.setmode(GPIO.Board)
-        else:
-            GPIO.setmode(GPIO.BCM)
-        GPIO.setup(18, GPIO.OUT)
-
-    last_alert_time = 0
-    while True:
-        person_detected = queue.get()
-        if person_detected is None: # Sentinel to stop
-            break
-
-        if config.get("use_gpio", True):
-            GPIO.output(18, GPIO.HIGH if person_detected else GPIO.LOW)
-
-        if person_detected and (time.time() - last_alert_time > 1):
-            socket.send_string("alert Person Detected!")
-            if verbose:
-                print("Sent: Person Detected!")
-            last_alert_time = time.time()
+# --- Helper Functions ---
 
 def load_config(file_path):
     """Simple parser for the custom config.cfg format."""
@@ -73,7 +40,6 @@ def load_config(file_path):
     
     with open(file_path, 'r') as f:
         for line in f:
-            # Remove comments and whitespace
             line = line.split('#')[0].strip()
             if not line or '=' not in line:
                 continue
@@ -81,287 +47,282 @@ def load_config(file_path):
             key, val = line.split('=', 1)
             key, val = key.strip(), val.strip()
             
-            # Parse values
-            if val.lower() == 'true': val = True
-            elif val.lower() == 'false': val = False
-            elif (val.startswith('"') and val.endswith('"')) or (val.startswith("'") and val.endswith("'")):
-                val = val[1:-1]
-            elif val.isdigit(): val = int(val)
+            try:
+                val = ast.literal_eval(val)
+            except (ValueError, SyntaxError):
+                if val.lower() == 'true': val = True
+                elif val.lower() == 'false': val = False
             
             config[key] = val
     return config
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="YOLO human detection (live or from file)")
-    parser.add_argument("--source", "-s", default="0",
-                        help="Camera index (integer) or path to video/image. Use an integer for camera (default: 0).")
-    parser.add_argument("--weights", "-w", default="yolov8n.pt",
-                        help="Model weights (e.g., yolov8n.pt, yolov8s.pt, yolov8m.pt). Default: yolov8n.pt")
-    parser.add_argument("--conf", "-c", type=float, default=0.5,
-                        help="Confidence threshold for detections (default: 0.5).")
-    parser.add_argument("--classes", type=str, default="0",
-                        help="Comma-separated class ids to detect (default: '0' for person in COCO).")
-    parser.add_argument("--no-display", action="store_true",
-                        help="Disable visual display window (useful for headless runs).")
-    parser.add_argument("--save", "-o", default=None,
-                        help="Path to save output video (e.g., output.mp4). If omitted, no file is written.")
-    parser.add_argument("--device", default=None,
-                        help="Device to run model on, e.g., 'cpu' or 'cuda'. If omitted, Ultralytics decides.")
-    parser.add_argument("--verbose", "-v", action="store_true",
-                        help="Print detection coordinates and extra info to console.")
-    parser.add_argument("--open-timeout", type=float, default=10.0,
-                        help="Seconds to wait for camera/source to open before failing (default: 10).")
-    parser.add_argument("--max-history", type=int, default=5,
-                        help="Maximum history length for movement tracking (default: 5).")
+    parser = argparse.ArgumentParser(description="YOLO human detection")
+    parser.add_argument("--source", "-s", default="0", help="Camera index or file path.")
+    parser.add_argument("--weights", "-w", default="yolov8n.pt", help="Model weights.")
+    parser.add_argument("--conf", "-c", type=float, default=0.5, help="Confidence threshold.")
+    parser.add_argument("--classes", type=str, default="0", help="Class IDs (0 for person).")
+    parser.add_argument("--no-display", action="store_true", help="Disable window.")
+    parser.add_argument("--save", "-o", default=None, help="Save video path.")
+    parser.add_argument("--device", default=None, help="Device (cpu/cuda).")
+    parser.add_argument("--verbose", "-v", action="store_true", help="Verbose output.")
+    parser.add_argument("--open-timeout", type=float, default=10.0, help="Source open timeout.")
+    parser.add_argument("--max-history", type=int, default=5, help="Movement history length.")
 
-    # Load defaults from config.cfg if it exists
+    # Load defaults from config if available
     config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.cfg")
     config = load_config(config_path)
     
     defaults = {}
-    if "video_source" in config: defaults["source"] = str(config["video_source"]) # Ensure string for argparse
+    if "video_source" in config: defaults["source"] = str(config["video_source"])
     if "model" in config: defaults["weights"] = config["model"]
     if "confidence_threshold" in config: defaults["conf"] = config["confidence_threshold"]
     if "device" in config: defaults["device"] = config["device"]
-    if "no_display" in config: defaults["no_display"] = config["no_display"]
-    if config.get("video_save") and "output_path" in config:
-        defaults["save"] = config["output_path"]
-    if "device" in config: defaults["device"] = config["device"]
-    if "verbose" in config: defaults["verbose"] = config["verbose"]
-    if "open_timeout" in config: defaults["open_timeout"] = config["open_timeout"]
     if "max_history" in config: defaults["max_history"] = config["max_history"]
-
-
+    
     parser.set_defaults(**defaults)
     return parser.parse_args()
 
+def io_worker(queue, config, verbose):
+    """Worker process for ZMQ and GPIO."""
+    context = zmq.Context()
+    socket = context.socket(zmq.PUB)
+    socket.bind("tcp://*:5555")
+    
+    if config.get("use_gpio", True):
+        mode = config.get("setmode", "BCM")
+        GPIO.setmode(GPIO.BOARD if mode == "BOARD" else GPIO.BCM)
+        GPIO.setup(18, GPIO.OUT)
+
+    last_alert_time = 0
+    
+    while True:
+        alert_state = queue.get()
+        if alert_state is None: # Sentinel to stop
+            break
+
+        # Trigger GPIO
+        if config.get("use_gpio", True):
+            GPIO.output(18, GPIO.HIGH if alert_state else GPIO.LOW)
+
+        # Trigger ZMQ Message (limit to once per second)
+        if alert_state and (time.time() - last_alert_time > 1):
+            socket.send_string("alert Person Detected!")
+            if verbose: print(">> Alert Sent!")
+            last_alert_time = time.time()
+
+def is_inside_polygon(point, polygon):
+    """
+    Checks if point (x,y) is inside the polygon.
+    Returns: True if inside or on edge.
+    """
+    # measureDist=False returns +1 (inside), -1 (outside), 0 (edge)
+    result = cv2.pointPolygonTest(polygon, point, False)
+    return result >= 0
+
+def draw_poly_zone(frame, polygon, color=(0, 255, 0), thickness=2):
+    cv2.polylines(frame, [polygon], isClosed=True, color=color, thickness=thickness)
+
+def is_moving_in_direction(p1, p2, target_vector, tolerance=0.5):
+    """
+    Calculates if movement from p1 to p2 matches target_vector direction.
+    """
+    # 1. Calculate movement vector
+    movement = np.array(p2) - np.array(p1)
+    
+    # Ignore tiny movements (jitter)
+    if np.linalg.norm(movement) < 2.0: 
+        return False
+
+    # 2. Normalize vectors
+    move_norm = movement / np.linalg.norm(movement)
+    target_norm = target_vector / np.linalg.norm(target_vector)
+
+    # 3. Dot Product
+    dot_product = np.dot(move_norm, target_norm)
+    
+    return bool(dot_product > tolerance)
+
+# --- Main Execution ---
 
 def main():
     args = parse_args()
     config = load_config(os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.cfg"))
-    box_x1 = float(config.get("square_x1", 0.2))
-    box_y1 = float(config.get("square_y1", 0.2))
-    box_x2 = float(config.get("square_x2", 0.8))
-    box_y2 = float(config.get("square_y2", 0.8))
+    
+    # 1. Setup Configuration
+    # Target Direction Vector (e.g., [0, 1] is DOWN, [0, -1] is UP)
+    vec_x = float(config.get("vector_x", 0))
+    vec_y = float(config.get("vector_y", 1)) # Default to 'Down'
+    VECTOR_TARGET = np.array([vec_x, vec_y])
 
-    VECTOR_TARGET = np.array([float(config.get("vector_x",1)),float(config.get("vector_y",1))])
-    # Performance optimizations
+    # Performance settings
     skip_frames = int(config.get("skip_frames", 0))
     resize_width = int(config.get("resize_width", 0))
 
-    # Start IO Process
+    # Define Polygon Zone (Normalized 0.0 to 1.0)
+    # Edit this array to change your shape!
+    # Order: Top-Left, Top-Right, Bottom-Right, Bottom-Left
+    p_1 = config.get("square_p1")
+    p_2 = config.get("square_p2")
+    p_3 = config.get("square_p3")
+    p_4 = config.get("square_p4")
+
+    poly_norm = np.array([
+        p_1,
+        p_2,
+        p_3,
+        p_4
+    ])
+    poly_pixels = None
+
+    # 2. Start IO Background Process
     io_queue = multiprocessing.Queue()
     io_process = multiprocessing.Process(target=io_worker, args=(io_queue, config, args.verbose))
     io_process.daemon = True
     io_process.start()
     
-    # Parse source (camera index or path)
-    source = int(args.source) if args.source.isdigit() else args.source
-    if args.verbose:
-        print(f"Using source: {source}")
-    print("-" * 30)
-    # Parse classes into list[int]
-    classes_list = [int(x) for x in args.classes.split(",") if x.strip() != ""]
-    if args.verbose:    
-        print(f"Detecting classes: {classes_list}")
-        print("-" * 30)
-
-    # Load model (may take time on first run)
-    if args.verbose:
-        print(f"Loading model from {args.weights}...")
-    src = "models\\"+args.weights
-    model = YOLO(src)
-    if args.verbose:
-        print("✅ Model loaded.")
-
-    # Try to move model to device if provided
+    # 3. Load YOLO Model
+    print(f"Loading model: {args.weights}...")
+    # Handle path if weights are in a subfolder
+    model_path = args.weights if os.path.exists(args.weights) else os.path.join("models", args.weights)
+    model = YOLO(model_path)
     if args.device:
-        try:
-            if args.verbose:
-                print(f"Moving model to device: {args.device}")
-            model.to(args.device)
-        except Exception:
-            if args.verbose:
-                print("Warning: could not set device (continuing with default).")
+        model.to(args.device)
 
-    # Open source (camera or file)
-    if args.verbose:
-        print(f"Opening source: {source}")
-    cap = cv2.VideoCapture(source)
-
-    # Wait for camera/source to become available up to timeout
-    import time
-    start = time.time()
-    if args.verbose: 
-        print("⏰ Waiting for source to open...")
+    # 4. Open Source
+    src_val = int(args.source) if args.source.isdigit() else args.source
+    cap = cv2.VideoCapture(src_val)
+    
+    start_wait = time.time()
     while not cap.isOpened():
-        if time.time() - start > args.open_timeout:
-            print(f"Error: Could not open source within {args.open_timeout} seconds.")
+        if time.time() - start_wait > args.open_timeout:
+            print(f"❌ Error: Could not open source {src_val}")
             return
-        time.sleep(0.2)
-    if args.verbose:
-        print("Source opened successfully.")
+        time.sleep(0.1)
+    
+    print("✅ System Started. Press 'q' to quit.")
 
-
-    writer = None
-    print("Press 'q' to quit (if display enabled).")
-
+    # Tracking Variables
     track_histories = {}
     frame_count = -1
     last_results = []
+    classes_list = [int(x) for x in args.classes.split(",") if x.strip()]
+    writer = None
 
-    while True:
-        ret, frame = cap.read() #ret = boolean, frame = image array(numpy)
-
-        if not ret: #check if frame is read correctly
-            break
-        
-        # Resize frame for performance if configured
-        if resize_width > 0:
+    try:
+        while True:
+            ret, frame = cap.read()
+            if not ret: break
+            
+            # Resize for performance
+            if resize_width > 0:
+                h, w = frame.shape[:2]
+                new_height = int(h * (resize_width / w))
+                frame = cv2.resize(frame, (resize_width, new_height))
+            
             h, w = frame.shape[:2]
-            new_height = int(h * (resize_width / w))
-            frame = cv2.resize(frame, (resize_width, new_height))
 
-        frame_count += 1
-        height, width, _ = frame.shape #get frame dimensions
-        draw_alert_box(frame, box_x1,box_y1,box_x2,box_y2, "Alert Zone")
-        
-        # Frame Skipping Logic
-        if skip_frames > 0 and (frame_count % (skip_frames + 1) != 0):
-            results = last_results
-        else:
-            # Run tracking
-            results = model.track(frame, classes=classes_list, conf=args.conf, persist=True, verbose=False)
-            last_results = results
-        
-        alert = False
-        person_in_zone_this_frame = False
-        for r in results:
-            boxes = r.boxes
-            for box in boxes:
-                x1, y1, x2, y2 = box.xyxy[0]
-                x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
+            # Initialize Polygon Pixels (Do this once per resolution change)
+            if poly_pixels is None:
+                poly_pixels = (poly_norm * [w, h]).astype(np.int32).reshape((-1, 1, 2))
 
-                center_x = int((x1 + x2) / 2)
-                center_y = int((y1 + y2) / 2)
-                #check if the detection is in the alert box
-                if (center_x > box_x1 * width and center_x < box_x2 * width and
-                    center_y > box_y1 * height and center_y < box_y2 * height):
-                    person_in_zone_this_frame = True
-                    pass
+            # Draw Zone (Blue Polygon)
+            draw_poly_zone(frame, poly_pixels, color=(255, 0, 0))
 
+            frame_count += 1
+            
+            # Frame Skipping Logic
+            if skip_frames > 0 and (frame_count % (skip_frames + 1) != 0):
+                results = last_results
+            else:
+                results = model.track(frame, classes=classes_list, conf=args.conf, persist=True, verbose=False)
+                last_results = results
+            
+            alert_active = False
 
-
-                rel_x = round(center_x / width, 3)
-                rel_y = round(center_y / height, 3)
-
-                if args.verbose:
-                    print(f"Human detected at: X={rel_x}, Y={rel_y} (Relative) id={box.id}")
-
-                cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                
-                label = f"Person {rel_x}, {rel_y}"
-                
-                # Handle tracking
-                if box.id is not None:
-                    track_id = int(box.id.item())
-                    label += f" ID: {track_id}"
+            for r in results:
+                boxes = r.boxes
+                for box in boxes:
+                    # Get Box Coordinates
+                    x1, y1, x2, y2 = box.xyxy[0].cpu().numpy().astype(int)
                     
-                    if track_id not in track_histories:
-                        track_histories[track_id] = deque(maxlen=args.max_history)
-                    track_histories[track_id].append((center_x, center_y))
-                    
+                    # Calculate Center
+                    cx, cy = int((x1 + x2) / 2), int((y1 + y2) / 2)
+                    center_point = (float(cx), float(cy))
 
+                    # 1. Check Zone
+                    in_zone = is_inside_polygon(center_point, poly_pixels)
+                    color = (0, 255, 0) # Green (Safe)
 
-                    if len(track_histories[track_id]) >= 2:
-                        points = track_histories[track_id]
-                    
-                        # Pass the start point (points[0]) and end point (points[-1]) separately
-                        person_moving_di = is_moving_in_direction(points[0], points[-1], VECTOR_TARGET, 0.5)
-                        if person_in_zone_this_frame and person_moving_di:
-                            alert = True
-                        # Draw trail
-                        if config["show_trail"]:
-                            for i in range(1, len(points)):
-                                cv2.line(frame, points[i-1], points[i], (0, 255, 255), 2)
+                    # Tracking Logic
+                    if box.id is not None:
+                        tid = int(box.id.item())
                         
-                        # Draw arrow for movement direction        
-                        # Draw arrow for movement direction        
-                        if config["show_arrow"]:
-                             cv2.arrowedLine(frame, points[0], points[-1], (0, 0, 255), 3, tipLength=0.5)
-                             
-                             # FIX: Convert target vector to a visible arrow starting from top-left (50,50)
-                             # We multiply by 50 so you can actually see the direction length
-                             start_pt = (50, 50)
-                             end_pt = (int(50 + VECTOR_TARGET[0] * 50), int(50 + VECTOR_TARGET[1] * 50))
-                             
-                             cv2.arrowedLine(frame, start_pt, end_pt, (255, 0, 0), 3, tipLength=0.3)
-                             cv2.putText(frame, "Target Dir", (50, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 1)
+                        if tid not in track_histories:
+                            track_histories[tid] = deque(maxlen=args.max_history)
+                        track_histories[tid].append((cx, cy))
+                        
+                        # 2. Check Direction
+                        points = track_histories[tid]
+                        is_moving_correctly = False
+                        
+                        if len(points) >= 2:
+                            is_moving_correctly = is_moving_in_direction(points[0], points[-1], VECTOR_TARGET, 0.5)
+                            
+                            # VISUALS: Trail
+                            if config.get("show_trail", True):
+                                pts = np.array(list(points)).reshape((-1, 1, 2))
+                                cv2.polylines(frame, [pts], False, (0, 255, 255), 2)
 
-                cv2.putText(frame, label, (x1, y1 - 10),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
-        
-        # Send state to IO process
-        io_queue.put(alert)
+                            # VISUALS: Movement Arrow
+                            if config.get("show_arrow", True):
+                                cv2.arrowedLine(frame, points[0], points[-1], (0, 165, 255), 2, tipLength=0.5)
 
+                        # 3. TRIGGER ALERT
+                        if in_zone and is_moving_correctly:
+                            alert_active = True
+                            color = (0, 0, 255) # Red (Alert)
+                            cv2.putText(frame, "ALERT!", (x1, y1 - 25), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
 
-        # Initialize writer if requested
-        if args.save and writer is None:
-            fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-            writer = cv2.VideoWriter(args.save, fourcc, 20.0, (width, height))
+                    # Draw Bounding Box
+                    cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+                    cv2.putText(frame, f"ID: {int(box.id) if box.id else '?'}", (x1, y1-5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
 
-        if writer is not None:
-            writer.write(frame)
+            # Send Alert to Worker
+            io_queue.put(alert_active)
 
-        if not args.no_display:
-            cv2.imshow("YOLO Human Detection", frame)
-            if cv2.waitKey(1) & 0xFF == ord('q'):
-                break
+            # Draw Target Vector Helper (Top-Left Corner)
+            # This shows you which way the system "wants" people to move
+            start_pt = (50, 50)
+            end_pt = (int(50 + VECTOR_TARGET[0] * 40), int(50 + VECTOR_TARGET[1] * 40))
+            cv2.arrowedLine(frame, start_pt, end_pt, (255, 0, 255), 2, tipLength=0.3)
+            cv2.putText(frame, "Target Dir", (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 255), 1)
 
-    cap.release()
-    io_queue.put(None) # Stop worker
-    io_process.join()
-    if writer is not None:
-        writer.release()
-    cv2.destroyAllWindows()
+            # Video Writer
+            if args.save:
+                if writer is None:
+                    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+                    writer = cv2.VideoWriter(args.save, fourcc, 20.0, (w, h))
+                writer.write(frame)
 
+            # Display
+            if not args.no_display:
+                cv2.imshow("Detection", frame)
+                if cv2.waitKey(1) & 0xFF == ord('q'):
+                    break
 
-def draw_alert_box(frame, r_x1, r_y1, r_x2, r_y2, alert_text):
-    x1 = round(r_x1 * frame.shape[1])
-    y1 = round(r_y1 * frame.shape[0])
-    x2 = round(r_x2 * frame.shape[1])
-    y2 = round(r_y2 * frame.shape[0])
-    """Draws a red alert box with text on the frame."""
-    cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 255), 3)
-    cv2.putText(frame, alert_text, (x1, y1 - 10),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+    except KeyboardInterrupt:
+        print("\nStopping...")
 
-
-def is_moving_in_direction(p1, p2, target_vector, tolerance=0.5):
-    """
-    p1: (x, y) starting point (previous frame)
-    p2: (x, y) ending point (current frame)
-    target_vector: (x, y) target direction
-    """
-    # 1. Calculate the movement vector (Current - Start)
-    # This creates a single vector [dx, dy]
-    movement = np.array(p2) - np.array(p1)
-    
-    # If the person didn't move (or barely moved), return False (single boolean)
-    if np.linalg.norm(movement) < 1.0: 
-        return False
-
-    # 2. Normalize the vectors
-    move_norm = movement / np.linalg.norm(movement)
-    target_norm = target_vector / np.linalg.norm(target_vector)
-
-    # 3. Calculate Dot Product (Result is a single scalar number)
-    dot_product = np.dot(move_norm, target_norm)
-
-    # 4. Return single boolean
-    return bool(dot_product > tolerance)
-
+    finally:
+        cap.release()
+        io_queue.put(None)
+        io_process.join()
+        if writer: writer.release()
+        cv2.destroyAllWindows()
+        print("Done.")
 
 if __name__ == "__main__":
-    print("Starting YOLO Human Detection...")
+    # Windows Support for Multiprocessing
+    multiprocessing.freeze_support()
     main()

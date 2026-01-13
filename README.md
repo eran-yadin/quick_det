@@ -56,8 +56,8 @@ vector_y = 0
 - make a GUI for choosing the active squre
 - make docker continer for moving to diffrent systems
 - make GUI for settings
-- rusburry pi inplement
-- socket implement
+- rusburry pi inplement (test)
+- socket implement (test)
 
 ## Notes:
 - `torch` and `torchvision` versions in `requirements.txt` may require a specific CUDA/cuDNN match for GPU acceleration. If you plan to use GPU, follow PyTorch install instructions at https://pytorch.org to install a compatible build.
